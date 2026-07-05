@@ -2,13 +2,14 @@
 Phân tích Lag tối ưu cho ICOR Việt Nam
 ========================================
 Mục tiêu:
-1. Cross-correlation giữa Đầu tư(t-k) và ΔGDP(t) với k = 0,1,2,3,4,5
-2. Tính ICOR với từng giả định lag (0–5) → so sánh tính ổn định & hợp lý (3–6)
+1. Cross-correlation giữa Đầu tư(t-k) và ΔGDP(t) với k = 0..MAX_LAG
+2. Tính ICOR với từng giả định lag (0..MAX_LAG) → so sánh tính ổn định & hợp lý (3–6)
 3. Kiểm định Granger causality: đầu tư ở lag nào "dẫn dắt" tăng trưởng GDP mạnh nhất
 
 Dữ liệu: World Bank CSV – GCF (% GDP) và GDP growth (%)
 """
 from pathlib import Path
+import math
 import warnings
 
 import numpy as np
@@ -34,7 +35,17 @@ plt.rcParams.update({
 BASE_DIR = Path(__file__).parent
 START_YEAR = 1990
 END_YEAR = 2024
-MAX_LAG = 5  # k = 0..5
+MAX_LAG = 34  # Tu sua so k toi da o day, vi du: 10, 15, 20.
+
+
+def cap_max_lag(max_lag: int, n_obs: int, min_obs: int = 5, label: str = "phan tich") -> int:
+    """Gioi han max lag de moi lag con du so quan sat toi thieu."""
+    max_allowed = max(0, n_obs - min_obs)
+    if max_lag > max_allowed:
+        print(f"[Canh bao] MAX_LAG={max_lag} qua lon cho {label}; tu dong giam ve {max_allowed}.")
+        return max_allowed
+    return max_lag
+
 
 OUTPUT_DIR = BASE_DIR / "lag_analysis_output"
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -90,6 +101,15 @@ print(f"\nDữ liệu sẵn sàng: {len(df)} năm ({df['year'].min()}–{df['yea
 print(df[["year", "gcf", "gdp_growth", "delta_gdp"]].head(10).to_string(index=False))
 print()
 
+MAX_LAG = cap_max_lag(
+    MAX_LAG,
+    n_obs=len(df.dropna(subset=["delta_gdp"])),
+    min_obs=5,
+    label="cross-correlation và ICOR",
+)
+LAG_VALUES = list(range(MAX_LAG + 1))
+print(f"Max lag đang dùng: k = 0..{MAX_LAG}")
+
 # ====================================================================
 # PHẦN 1: CROSS-CORRELATION – Đầu tư(t-k) vs ΔGDP(t)
 # ====================================================================
@@ -101,7 +121,7 @@ print("=" * 70)
 valid = df.dropna(subset=["delta_gdp"]).copy()
 
 results_cc = []
-for k in range(MAX_LAG + 1):
+for k in LAG_VALUES:
     # GCF(t-k) → lag k kỳ → dịch chuỗi GCF về trước k bước
     shifted = valid["gcf"].shift(k)
     mask = shifted.notna() & valid["delta_gdp"].notna()
@@ -138,7 +158,7 @@ ax.axhline(0, color="black", linewidth=0.8)
 ax.set_xlabel("Lag k (kỳ trễ đầu tư)")
 ax.set_ylabel("Hệ số tương quan Pearson (r)")
 ax.set_title("Cross-Correlation: Investment(t−k)  vs  ΔGDP(t)")
-ax.set_xticks(range(MAX_LAG + 1))
+ax.set_xticks(cc_df["lag_k"].astype(int).tolist())
 for i, row in cc_df.iterrows():
     ax.text(row["lag_k"], row["pearson_r"] + 0.02 * np.sign(row["pearson_r"]),
             f'{row["pearson_r"]:.3f}\np={row["p_value"]:.3f}',
@@ -160,7 +180,7 @@ print(f"\n[Lưu biểu đồ] {OUTPUT_DIR / '01_cross_correlation.png'}")
 # PHẦN 2: ICOR THEO TỪNG LAG – SO SÁNH TÍNH ỔN ĐỊNH & HỢP LÝ
 # ====================================================================
 print("\n" + "=" * 70)
-print("PHẦN 2: ICOR THEO TỪNG LAG (k=0..5)  –  SO SÁNH ỔN ĐỊNH & HỢP LÝ")
+print(f"PHẦN 2: ICOR THEO TỪNG LAG (k=0..{MAX_LAG})  –  SO SÁNH ỔN ĐỊNH & HỢP LÝ")
 print("=" * 70)
 
 REASONABLE_LOW = 3.0
@@ -169,7 +189,7 @@ REASONABLE_HIGH = 6.0
 icor_summary = []
 icor_series = {}
 
-for k in range(MAX_LAG + 1):
+for k in LAG_VALUES:
     col = f"icor_lag{k}"
     # ICOR(t, lag_k) = GCF(t-k) / GDP_growth(t)
     gcf_shifted = df["gcf"].shift(k)
@@ -210,11 +230,14 @@ print(f"  - Mean = {best_icor_lag['mean']:.3f}, Median = {best_icor_lag['median'
 print(f"  - CV = {best_icor_lag['CV%']:.1f}%, % nằm trong [3–6] = {best_icor_lag['%_in_3-6']:.1f}%")
 
 # --- Biểu đồ ICOR theo từng lag ---
-fig, axes = plt.subplots(2, 3, figsize=(16, 9), sharex=True)
+n_lags = len(LAG_VALUES)
+n_cols = min(3, n_lags)
+n_rows = math.ceil(n_lags / n_cols)
+fig, axes = plt.subplots(n_rows, n_cols, figsize=(5.3 * n_cols, 4.2 * n_rows), sharex=True, squeeze=False)
 axes = axes.ravel()
 
-for idx in range(MAX_LAG + 1):
-    ax = axes[idx]
+for ax_idx, idx in enumerate(LAG_VALUES):
+    ax = axes[ax_idx]
     ser = icor_series[idx]
     ax.plot(ser["year"], ser["icor"], marker="o", markersize=4, linewidth=1.3, color="teal")
     ax.axhspan(REASONABLE_LOW, REASONABLE_HIGH, alpha=0.15, color="green", label="Vùng hợp lý [3–6]")
@@ -225,11 +248,13 @@ for idx in range(MAX_LAG + 1):
     ax.legend(fontsize=7, loc="upper right")
     ax.grid(True, alpha=0.3)
 
-axes[-1].set_xlabel("Năm")
-axes[-2].set_xlabel("Năm")
-axes[-3].set_xlabel("Năm")
+for ax in axes[n_lags:]:
+    ax.set_visible(False)
 
-fig.suptitle("ICOR Việt Nam theo từng giả định Lag (k=0..5)", fontsize=14, fontweight="bold", y=1.01)
+for ax in axes[max(0, n_lags - n_cols):n_lags]:
+    ax.set_xlabel("Năm")
+
+fig.suptitle(f"ICOR Việt Nam theo từng giả định Lag (k=0..{MAX_LAG})", fontsize=14, fontweight="bold", y=1.01)
 fig.tight_layout()
 fig.savefig(OUTPUT_DIR / "02_icor_by_lag.png", dpi=150, bbox_inches="tight")
 plt.close(fig)
@@ -248,7 +273,7 @@ ax2.bar(x + 0.15, summary_df["%_in_3-6"], width=0.3, color="#2ca02c", label="% i
 ax2.set_ylabel("% quan sát nằm trong [3–6]", color="#2ca02c")
 ax2.tick_params(axis="y", labelcolor="#2ca02c")
 
-ax1.set_xticks(range(MAX_LAG + 1))
+ax1.set_xticks(summary_df["lag_k"].astype(int).tolist())
 ax1.set_title("So sánh tính ổn định (CV) & hợp lý (% in [3–6]) theo Lag")
 # Combined legend
 lines1, labels1 = ax1.get_legend_handles_labels()
@@ -302,13 +327,17 @@ if use_diff:
 else:
     granger_data = np.column_stack([gdp_series, gcf_series])
 
-print(f"\n--- Granger Causality Test (max lag = {MAX_LAG}) ---")
+MAX_GRANGER_LAG = min(MAX_LAG, max(1, (len(granger_data) - 2) // 3))
+if MAX_GRANGER_LAG < MAX_LAG:
+    print(f"  [Cảnh báo] MAX_LAG={MAX_LAG} quá lớn cho Granger test; tự động dùng max lag = {MAX_GRANGER_LAG}.")
+
+print(f"\n--- Granger Causality Test (max lag = {MAX_GRANGER_LAG}) ---")
 print(f"  Dữ liệu: {'sai phân bậc 1' if use_diff else 'chuỗi gốc'}, n = {len(granger_data)}")
 
 granger_results = []
 try:
-    gc = grangercausalitytests(granger_data, maxlag=MAX_LAG, verbose=False)
-    for lag in range(1, MAX_LAG + 1):
+    gc = grangercausalitytests(granger_data, maxlag=MAX_GRANGER_LAG, verbose=False)
+    for lag in range(1, MAX_GRANGER_LAG + 1):
         test_stats = gc[lag][0]
         # Lấy F-test (ssr_ftest)
         f_stat = test_stats["ssr_ftest"][0]
@@ -353,7 +382,7 @@ if granger_results:
     ax.set_xlabel("Lag (kỳ trễ)")
     ax.set_ylabel("F-statistic")
     ax.set_title("Granger Causality: GCF → GDP Growth")
-    ax.set_xticks(range(1, MAX_LAG + 1))
+    ax.set_xticks(gc_df["lag"].astype(int).tolist())
 
     # Thêm p-value trên mỗi cột
     for _, row in gc_df.iterrows():
